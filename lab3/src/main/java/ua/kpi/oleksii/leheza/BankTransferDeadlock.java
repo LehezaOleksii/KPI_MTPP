@@ -1,0 +1,163 @@
+package ua.kpi.oleksii.leheza;
+
+import java.util.*;
+import java.util.concurrent.*;
+
+public class BankTransferDeadlock {
+    static class BankAccount {
+        private double balance;
+        private final int id;
+
+        public BankAccount(int id, double initialBalance) {
+            this.id = id;
+            this.balance = initialBalance;
+        }
+
+        public double getBalance() {
+            return balance;
+        }
+
+        public void deposit(double amount) {
+            balance += amount;
+        }
+
+        public boolean withdraw(double amount) {
+            if (balance >= amount) {
+                balance -= amount;
+                return true;
+            }
+            return false;
+        }
+
+        public int getId() {
+            return id;
+        }
+    }
+
+    private static final int ACCOUNT_COUNT = 150;
+    private static final int THREAD_COUNT = 1500;
+    private static final double INITIAL_BALANCE = 1000.0;
+
+    public static void main(String[] args) throws Exception {
+        System.out.println("=== Bank Transfer Deadlock Demo ===\n");
+
+        System.out.println("1. WITH DEADLOCK (Wrong lock order):");
+        try {
+            runTransfersWithDeadlock();
+        } catch (Exception e) {
+            System.out.println("Execution interrupted (likely deadlock): " + e.getMessage());
+        }
+
+        System.out.println("2. WITHOUT DEADLOCK (Ordered locks):");
+        runTransfersWithoutDeadlock();
+    }
+
+    private static void runTransfersWithDeadlock() throws Exception {
+        List<BankAccount> accounts = new ArrayList<>();
+
+        for (int i = 0; i < ACCOUNT_COUNT; i++) {
+            accounts.add(new BankAccount(i, INITIAL_BALANCE));
+        }
+
+        double totalBefore = accounts.stream().mapToDouble(BankAccount::getBalance).sum();
+        System.out.println("Total balance BEFORE: " + totalBefore);
+
+        ExecutorService executor = Executors.newFixedThreadPool(100);
+        CountDownLatch latch = new CountDownLatch(THREAD_COUNT);
+
+        long startTime = System.currentTimeMillis();
+
+        for (int i = 0; i < THREAD_COUNT; i++) {
+            executor.submit(() -> {
+                try {
+                    Random r = new Random();
+                    int from = r.nextInt(ACCOUNT_COUNT);
+                    int to = r.nextInt(ACCOUNT_COUNT);
+                    if (from == to) return;
+
+                    double amount = 10.0 + r.nextDouble() * 90.0;
+                    transferWithDeadlock(accounts.get(from), accounts.get(to), amount);
+                } finally {
+                    latch.countDown();
+                }
+            });
+        }
+
+        boolean finished = latch.await(3, TimeUnit.SECONDS);
+        executor.shutdownNow();
+
+        if (!finished) {
+            System.out.println("DEADLOCK DETECTED - timeout reached!");
+            System.out.println("Not all transfers completed");
+        }
+    }
+
+    private static void runTransfersWithoutDeadlock() throws Exception {
+        List<BankAccount> accounts = new ArrayList<>();
+
+        for (int i = 0; i < ACCOUNT_COUNT; i++) {
+            accounts.add(new BankAccount(i, INITIAL_BALANCE));
+        }
+
+        double totalBefore = accounts.stream().mapToDouble(BankAccount::getBalance).sum();
+        System.out.println("Total balance BEFORE: " + totalBefore);
+
+        ExecutorService executor = Executors.newFixedThreadPool(100);
+        CountDownLatch latch = new CountDownLatch(THREAD_COUNT);
+
+        long startTime = System.currentTimeMillis();
+
+        for (int i = 0; i < THREAD_COUNT; i++) {
+            executor.submit(() -> {
+                try {
+                    Random r = new Random();
+                    int from = r.nextInt(ACCOUNT_COUNT);
+                    int to = r.nextInt(ACCOUNT_COUNT);
+                    if (from == to) return;
+
+                    double amount = 10.0 + r.nextDouble() * 90.0;
+                    transferWithoutDeadlock(accounts.get(from), accounts.get(to), amount);
+                } finally {
+                    latch.countDown();
+                }
+            });
+        }
+
+        latch.await();
+        executor.shutdown();
+        executor.awaitTermination(10, TimeUnit.SECONDS);
+
+        long endTime = System.currentTimeMillis();
+
+        double totalAfter = accounts.stream().mapToDouble(BankAccount::getBalance).sum();
+        System.out.println("Total balance AFTER:  " + totalAfter);
+        System.out.println("Time: " + (endTime - startTime) + " ms");
+        System.out.println("All transfers completed successfully");
+    }
+
+    private static void transferWithDeadlock(BankAccount from, BankAccount to, double amount) {
+        synchronized (from) {
+            try { Thread.sleep(1); } catch (Exception e) {}
+            synchronized (to) {
+                if (from.getBalance() >= amount) {
+                    from.withdraw(amount);
+                    to.deposit(amount);
+                }
+            }
+        }
+    }
+
+    private static void transferWithoutDeadlock(BankAccount from, BankAccount to, double amount) {
+        BankAccount first = from.getId() < to.getId() ? from : to;
+        BankAccount second = from.getId() < to.getId() ? to : from;
+
+        synchronized (first) {
+            synchronized (second) {
+                if (from.getBalance() >= amount) {
+                    from.withdraw(amount);
+                    to.deposit(amount);
+                }
+            }
+        }
+    }
+}
